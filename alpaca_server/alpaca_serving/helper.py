@@ -54,8 +54,8 @@ def send_ndarray(src, dest, X, req_id=b'', flags=0, copy=True, track=False):
     md = dict(dtype=str(X.dtype), shape=X.shape)
     return src.send_multipart([dest, jsonapi.dumps(md), X, req_id], flags, copy=copy, track=track)
 
-def send_test(src, dest, X, req_id=b'', flags=0, copy=True, track=False):
-    return src.send_multipart([dest, X, req_id], flags, copy=copy, track=track)
+def send_test(socket, job_id, job_type, data, flags=0, copy=True, track=False):
+    return socket.send_multipart([job_id, job_type, data], flags, copy=copy, track=track)
 
 def check_max_seq_len(value):
     if value is None or value.lower() == 'none':

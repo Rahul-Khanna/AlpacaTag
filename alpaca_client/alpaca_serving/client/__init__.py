@@ -22,22 +22,25 @@ _Response = namedtuple('_Response', ['id', 'content'])
 Response = namedtuple('Response', ['id'])
 
 class AlpacaClient(object):
-    def __init__(self, ip='localhost', port=5555, port_out=5556,
+    def __init__(self, user_id, ip='localhost', port=5555, port_out=5556,
                  output_fmt='ndarray', show_server_config=False,
                  identity=None, check_version=True, check_length=True,
                  ignore_all_checks=False,
                  timeout=1000):
+        
+        self.user_id = user_id
+        self.cur_model_id = None
 
         self.context = zmq.Context()
-        self.sender = self.context.socket(zmq.PUSH)
-        self.sender.setsockopt(zmq.LINGER, 0)
+        self.sending_sock_sock = self.context.socket(zmq.PUSH)
+        self.sending_sock_sock.setsockopt(zmq.LINGER, 0)
         self.identity = identity or str(uuid.uuid4()).encode('ascii')
-        self.sender.connect('tcp://%s:%d' % (ip, port))
+        self.sending_sock_sock.connect('tcp://%s:%d' % (ip, port))
 
-        self.receiver = self.context.socket(zmq.SUB)
-        self.receiver.setsockopt(zmq.LINGER, 0)
-        self.receiver.setsockopt(zmq.SUBSCRIBE, self.identity)
-        self.receiver.connect('tcp://%s:%d' % (ip, port_out))
+        self.receiving_sock = self.context.socket(zmq.SUB)
+        self.receiving_sock.setsockopt(zmq.LINGER, 0)
+        self.receiving_sock.setsockopt(zmq.SUBSCRIBE, self.identity)
+        self.receiving_sock.connect('tcp://%s:%d' % (ip, port_out))
 
         self.request_id = 0
         self.timeout_short = timeout
@@ -71,16 +74,18 @@ class AlpacaClient(object):
         """
             Gently close all connections of the client.
         """
-        self.sender.close()
-        self.receiver.close()
+        self.sending_sock_sock.close()
+        self.receiving_sock.close()
         self.context.term()
 
     def _send(self, msg_type, msg, msg_len=0):
         self.request_id += 1
-        self.sender.send_multipart([self.identity, msg_type, msg, b'%d' % self.request_id, b'%d' % msg_len])
+        self.sending_sock_sock.send_multipart([self.identity, self.user_id, b'%d' % self.request_id, msg_type, b'%d' % msg_len, msg])
         self.pending_request.add(self.request_id)
         return self.request_id
 
+    # TODO
+    # this essentially blocks - this while loop here, api request won't return until this while loop breaks
     def _recv(self, wait_for_req_id=None):
         try:
             while True:
@@ -90,8 +95,9 @@ class AlpacaClient(object):
                     return _Response(wait_for_req_id, response)
 
                 # receive a response
-                response = self.receiver.recv_multipart()
-                request_id = int(response[-1])
+                response = self.receiving_sock.recv_multipart()
+                client_id, user_id, request_id, job_output = response
+                request_id = int(request_id)
                 # if not wait for particular response then simply return
                 if not wait_for_req_id or (wait_for_req_id == request_id):
                     self.pending_request.remove(request_id)
@@ -136,9 +142,9 @@ class AlpacaClient(object):
         def arg_wrapper(self, *args, **kwargs):
             if 'blocking' in kwargs and not kwargs['blocking']:
                 # override client timeout setting if `func` is called in non-blocking way
-                self.receiver.setsockopt(zmq.RCVTIMEO, -1)
+                self.receiving_sock.setsockopt(zmq.RCVTIMEO, -1)
             else:
-                self.receiver.setsockopt(zmq.RCVTIMEO, self.timeout_short)
+                self.receiving_sock.setsockopt(zmq.RCVTIMEO, self.timeout_short)
             try:
                 return func(self, *args, **kwargs)
             except zmq.error.Again as _e:
@@ -151,7 +157,7 @@ class AlpacaClient(object):
                 else:
                     _raise(t_e, _e)
             finally:
-                self.receiver.setsockopt(zmq.RCVTIMEO, -1)
+                self.receiving_sock.setsockopt(zmq.RCVTIMEO, -1)
 
         return arg_wrapper
 
@@ -160,9 +166,9 @@ class AlpacaClient(object):
         def arg_wrapper(self, *args, **kwargs):
             if 'blocking' in kwargs and not kwargs['blocking']:
                 # override client timeout setting if `func` is called in non-blocking way
-                self.receiver.setsockopt(zmq.RCVTIMEO, -1)
+                self.receiving_sock.setsockopt(zmq.RCVTIMEO, -1)
             else:
-                self.receiver.setsockopt(zmq.RCVTIMEO, self.timeout_long)
+                self.receiving_sock.setsockopt(zmq.RCVTIMEO, self.timeout_long)
             try:
                 return func(self, *args, **kwargs)
             except zmq.error.Again as _e:
@@ -175,86 +181,160 @@ class AlpacaClient(object):
                 else:
                     _raise(t_e, _e)
             finally:
-                self.receiver.setsockopt(zmq.RCVTIMEO, -1)
+                self.receiving_sock.setsockopt(zmq.RCVTIMEO, -1)
 
         return arg_wrapper
+
+    def _check_response(self, response, original_req_id):
+        client_id, user_id, req_id, job_output = response
+
+        if client_id == self.identity and self.user_id == user_id and req_id == original_req_id:
+            return True
+        else:
+            return False
 
     @property
     @_timeout_short
     def server_status(self):
         """
-            Get the current status of the server connected to this client
+        Get the current status of the server connected to this client
         :return: a dictionary contains the current status of the server connected to this client
         :rtype: dict[str, str]
         """
-        req_id = self._send(b'SHOW_CONFIG', b'SHOW_CONFIG')
-        return jsonapi.loads(self._recv(req_id).content[1])
+        req_id = self._send(b'SHOW_CONFIG', b'1')
+        
+        response = self._recv(req_id).content
+
+
+
+        if _check_response(response, req_id):
+            return jsonapi.loads(response[3])
+        else:
+            return False
 
     @_timeout_long
-    def initiate(self, project_id):
-        # model = Sequence()
-        req_id = self._send(b'INITIATE', bytes(str(project_id), encoding='ascii'))
-        return jsonapi.loads(self._recv(req_id).content[1])
+    def initiate(self, model_id):
+        # TODO
+        # Should handle replacement probably better, but for now let's assume user only calls this once
+        self.cur_model_id = model_id
+
+        req_id = self._send(b'INITIATE', bytes(str(model_id), encoding='ascii'))
+        
+        response = self._recv(req_id).content
+
+        client_id, user_id, request_id, job_output = response
+
+        if _check_response(response, req_id):
+            return jsonapi.loads(job_output)
+        else:
+            return False
+
+    @_timeout_long
+    # TODO
+    # should figure out the better way to do this
+    def worker_status(self, dummy=1):
+        req_id = self._send(b'WORKER_STATUS', b"1")
+
+        response = self._recv(req_id).content
+
+        client_id, user_id, request_id, job_output = response
+
+        if _check_response(response, req_id):
+            return jsonapi.loads(job_output)
+        else:
+            return False
 
     @_timeout_long
     def online_initiate(self, sentences, predefined_label):
         # model.online_word_build(sent,[['B-PER', 'I-PER', 'B-LOC', 'I-LOC', 'B-ORG', 'I-ORG', 'B-MISC', 'I-MISC', 'O']])
-        req_id = self._send(b'ONLINE_INITIATE', jsonapi.dumps([sentences, predefined_label]), len(sentences))
-        return jsonapi.loads(self._recv(req_id).content[1])
+        req_id = self._send(b'ONLINE_INITIATE', jsonapi.dumps([self.cur_model_id, sentences, predefined_label]), len(sentences))
+        
+        response = self._recv(req_id).content
+
+        client_id, user_id, request_id, job_output = response
+
+        if _check_response(response, req_id):
+            return jsonapi.loads(job_output)
+        else:
+            return False
 
     @_timeout_long
     def online_learning(self, sentences, labels, epoch, batch):
         assert len(sentences) == len(labels)
-        req_id = self._send(b'ONLINE_LEARNING', jsonapi.dumps([sentences, labels, epoch, batch]), len(sentences))
-        return jsonapi.loads(self._recv(req_id).content[1])
+        req_id = self._send(b'ONLINE_LEARNING', jsonapi.dumps([self.cur_model_id, sentences, labels, epoch, batch]), len(sentences))
+        
+        response = self._recv(req_id).content
+
+        client_id, user_id, request_id, job_output = response
+
+        if _check_response(response, req_id):
+            return jsonapi.loads(job_output)
+        else:
+            return False
 
     @_timeout_long
     def active_learning(self, sentences, acquire):
-        req_id = self._send(b'ACTIVE_LEARNING', jsonapi.dumps([sentences, acquire]), len(sentences))
-        return jsonapi.loads(self._recv(req_id).content[1])
+        req_id = self._send(b'ACTIVE_LEARNING', jsonapi.dumps([self.cur_model_id, sentences, acquire]), len(sentences))
+        
+        response = self._recv(req_id).content
+
+        client_id, user_id, request_id, job_output = response
+
+        if _check_response(response, req_id):
+            return jsonapi.loads(job_output)
+        else:
+            return False
 
     @_timeout_long
     def predict(self, sentences):
-        req_id = self._send(b'PREDICT', jsonapi.dumps(sentences), len(sentences))
-        return jsonapi.loads(self._recv(req_id).content[1])
+        req_id = self._send(b'PREDICT', jsonapi.dumps([self.cur_model_id, sentences]), len(sentences))
+        
+        response = self._recv(req_id).content
 
-    @_timeout_long
-    def encode(self, texts, blocking=True, is_tokenized=False, show_tokens=False):
-        req_id = self._send(jsonapi.dumps(texts), len(texts))
-        r = self._recv_test(req_id)
-        return r
+        client_id, user_id, request_id, job_output = response
 
-    def fetch(self, delay=.0):
-        time.sleep(delay)
-        while self.pending_request:
-            yield self._recv_ndarray()
+        if _check_response(response, req_id):
+            return jsonapi.loads(job_output)
+        else:
+            return False
 
-    def fetch_all(self, sort=True, concat=False):
-        if self.pending_request:
-            tmp = list(self.fetch())
-            if sort:
-                tmp = sorted(tmp, key=lambda v: v.id)
-            tmp = [v.embedding for v in tmp]
-            if concat:
-                if self.output_fmt == 'ndarray':
-                    tmp = np.concatenate(tmp, axis=0)
-                elif self.output_fmt == 'list':
-                    tmp = [vv for v in tmp for vv in v]
-            return tmp
+    # @_timeout_long
+    # def encode(self, texts, blocking=True, is_tokenized=False, show_tokens=False):
+    #     req_id = self._send(jsonapi.dumps(texts), len(texts))
+    #     r = self._recv_test(req_id)
+    #     return r
 
-    def encode_async(self, batch_generator, max_num_batch=None, delay=0.1, **kwargs):
+    # def fetch(self, delay=.0):
+    #     time.sleep(delay)
+    #     while self.pending_request:
+    #         yield self._recv_ndarray()
 
-        def run():
-            cnt = 0
-            for texts in batch_generator:
-                self.encode(texts, blocking=False, **kwargs)
-                cnt += 1
-                if max_num_batch and cnt == max_num_batch:
-                    break
+    # def fetch_all(self, sort=True, concat=False):
+    #     if self.pending_request:
+    #         tmp = list(self.fetch())
+    #         if sort:
+    #             tmp = sorted(tmp, key=lambda v: v.id)
+    #         tmp = [v.embedding for v in tmp]
+    #         if concat:
+    #             if self.output_fmt == 'ndarray':
+    #                 tmp = np.concatenate(tmp, axis=0)
+    #             elif self.output_fmt == 'list':
+    #                 tmp = [vv for v in tmp for vv in v]
+    #         return tmp
 
-        t = threading.Thread(target=run)
-        t.start()
-        return self.fetch(delay)
+    # def encode_async(self, batch_generator, max_num_batch=None, delay=0.1, **kwargs):
+
+    #     def run():
+    #         cnt = 0
+    #         for texts in batch_generator:
+    #             self.encode(texts, blocking=False, **kwargs)
+    #             cnt += 1
+    #             if max_num_batch and cnt == max_num_batch:
+    #                 break
+
+    #     t = threading.Thread(target=run)
+    #     t.start()
+    #     return self.fetch(delay)
 
     def __enter__(self):
         return self

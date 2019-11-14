@@ -10,6 +10,3 @@ def terminate():
     from alpaca_serving.helper import get_run_args, get_shutdown_parser
     args = get_run_args(get_shutdown_parser)
     AlpacaServer.shutdown(args)
-
-if __name__ == '__main__':
-	main()

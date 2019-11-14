@@ -460,7 +460,7 @@ class AlpacaWorker(Process):
             _model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, b'Online learning failed')
             
 
-     def _predict(self, recv_sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger):
+    def _predict(self, recv_sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger):
         model_id, sentences = msg
         logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, model_id))
         if _check_for_model(client_id, model_id):

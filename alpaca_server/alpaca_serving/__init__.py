@@ -22,6 +22,7 @@ from alpaca_model.pytorchAPI import SequenceTaggingModel
 __all__ = ['__version__']
 __version__ = '1.0.1'
 
+# TODO
 # Figure out a way to use this / enforce a schema - use of a function seems strange
 # Communication_Message = namedtuple('Communication_Message', ["client_id", "user_id", "req_id", "msg_type", "msg_len", "msg"])
 # Job_Message = namedtuple("Job_Message", ["job_id", "msg_type", "msg"])
@@ -65,6 +66,7 @@ class AlpacaServer(threading.Thread):
         self.model_dir = args.model_dir  # alpaca_model per project
         self.models = {} # pass this model to every sink and worker!!!!
                         # in reality this is only being passed to every worker
+        
         # learning initial configuration
         self.batch_size = args.batch_size
         self.epoch = args.epoch
@@ -101,6 +103,7 @@ class AlpacaServer(threading.Thread):
         self.server_event_obj.clear()
         self.join()
 
+    # TODO
     # don't think this is being used properly
     @zmqd.context()
     @zmqd.socket(zmq.PUSH)
@@ -108,6 +111,7 @@ class AlpacaServer(threading.Thread):
         client_sock.connect('tcp://localhost:%d' % self.port)
         client_sock.send_multipart([b'0', b'0', b'0', ServerCmd.terminate])
 
+    # TODO
     # don't think this is being used properly
     # what about closing down Sink and Worker processes?
     @staticmethod
@@ -163,6 +167,7 @@ class AlpacaServer(threading.Thread):
         rand_worker_socket = None
         server_status = ServerStatistic()
 
+        # TODO
         # this needs to be fixed, the type of the object changes depending
         # on where the code is being run (import issues)
         for p in self.processes:
@@ -179,7 +184,6 @@ class AlpacaServer(threading.Thread):
         # project based file management
         while True:
             try:
-                # make sure client matches this
                 request = client_sock.recv_multipart()
                 client_id, user_id, req_id, msg_type, msg_len, msg = request
                 assert req_id.isdigit()
@@ -213,6 +217,7 @@ class AlpacaServer(threading.Thread):
                 else:
                     self.logger.info('new %s request from user: %d on client: %s\treq id: %d\tsize: %d' % (msg_type, int(user_id), client_id, int(req_id), int(msg_len)))
 
+                    # TODO
                     # Not sure we need this, this seems to involve letting small messages use sock[0] and larger messages
                     # should use other sockets, but:
                     # renew the backend socket to prevent large job queueing up
@@ -311,6 +316,7 @@ class AlpacaSink(Process):
         poller.register(worker_receiver_sock, zmq.POLLIN)
         logger.info("finsihed setting up Poller sockets")
 
+        # TODO
         # send worker receiver address back to ventilator
         # Not sure why we do this, but we aren't handling this
         ventilator_sock.send(receiver_addr.encode('ascii'))
@@ -336,7 +342,6 @@ class AlpacaSink(Process):
 
             # whole point of this is that certain requests don't require worker to process anything
             if socks.get(ventilator_sock) == zmq.POLLIN:
-                # before: client_addr, msg_type, msg_info, req_id 
                 client_id, user_id, req_id, msg_type, msg = ventilator_sock.recv_multipart()
                 
                 if msg_type == ServerCmd.show_config:

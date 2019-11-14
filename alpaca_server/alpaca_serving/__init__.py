@@ -103,26 +103,23 @@ class AlpacaServer(threading.Thread):
         self.server_event_obj.clear()
         self.join()
 
-    # TODO
-    # don't think this is being used properly
     @zmqd.context()
     @zmqd.socket(zmq.PUSH)
-    def _send_close_signal(self, _, client_sock):
-        client_sock.connect('tcp://localhost:%d' % self.port)
-        client_sock.send_multipart([b'0', b'0', b'0', ServerCmd.terminate])
+    def _send_close_signal(self, _, sending_myself_sock):
+        sending_myself_sock.connect('tcp://localhost:%d' % self.port)
+        sending_myself_sock.send_multipart([b'0', b'0', b'0', ServerCmd.terminate, b'0', b'0'])
 
     # TODO
     # don't think this is being used properly
-    # what about closing down Sink and Worker processes?
     @staticmethod
     def shutdown(args):
         with zmq.Context() as ctx:
             ctx.setsockopt(zmq.LINGER, args.timeout)
-            with ctx.socket(zmq.PUSH) as client_sock:
+            with ctx.socket(zmq.PUSH) as sock:
                 try:
-                    client_sock.connect('tcp://%s:%d' % (args.ip, args.port))
-                    client_sock.send_multipart([b'0', b'0', b'0', ServerCmd.terminate])
-                    print('shutdown signal sent to %d' % args.port)
+                    sock.connect('tcp://%s:%d' % (args.ip, args.port))
+                    sock.send_multipart([b'0', b'0', b'0', ServerCmd.terminate, b'0', b'0'])
+                    self.logger.info('shutdown signal sent to %d' % args.port)
                 except zmq.error.Again:
                     raise TimeoutError(
                         'no response from the server (with "timeout"=%d ms), please check the following:'
@@ -199,7 +196,7 @@ class AlpacaServer(threading.Thread):
                     self.logger.info('new config request\treq id: %d\tclient: %s' % (int(req_id), client_id))
                     status_runtime = {'client': client_id.decode('ascii'),
                                       'num_process': len(self.processes),
-                                      'processes' : [type(process) for process in self.processes],
+                                      'processes' : [str(type(process)) for process in self.processes],
                                       'ventilator -> worker': backend_addr_list,
                                       'worker -> sink': sink_pull_addr,
                                       'ventilator <-> sink': ventilator_sink_addr,
@@ -229,7 +226,7 @@ class AlpacaServer(threading.Thread):
                     job_id = client_id + b'#' + user_id + b'#' + req_id
                     try:
                         rand_worker_socket.send_multipart([job_id, msg_type, msg],zmq.NOBLOCK)  # fixed!
-                        self.logger.info('%s job registered with id: %s and size: %d' % (msg_type, job_id, msg_len))
+                        self.logger.info('%s job registered with id: %s and size: %d' % (msg_type, job_id, int(msg_len)))
                     except zmq.error.Again:
                         # skip worker and sent this to straight to the sink
                         self.logger.info('zmq.error.Again: resource not available temporally, please send again!')
@@ -346,11 +343,11 @@ class AlpacaSink(Process):
                 
                 if msg_type == ServerCmd.show_config:
                     time.sleep(0.1)  # dirty fix of slow-joiner: sleep so that client receiver can connect.
-                    logger.info('sending server config to user: %d on client: %s' % (int(client_id), user_id))
+                    logger.info('sending server config to user: %d on client: %s' % (int(user_id), client_id))
                     client_sock.send_multipart([client_id, user_id, req_id, msg])
                 if msg_type == ServerCmd.error:
                     time.sleep(0.1)  # dirty fix of slow-joiner: sleep so that client receiver can connect.
-                    logger.info('sending error to user: %d on client: %s' % (int(client_id), user_id))
+                    logger.info('sending error to user: %d on client: %s' % (int(user_id), client_id))
                     client_sock.send_multipart([client_id, user_id, req_id, msg])
 
 class AlpacaWorker(Process):
@@ -404,82 +401,82 @@ class AlpacaWorker(Process):
         return client_id in self.models and model_id in self.models[user_id]
 
     def _model_not_found(self, sink_sock, job_id, msg_type, client_id, model_id, logger, error_output):
-        logger.info('model can not be found, client: %s, model: %d' % (client_id, model_id))
+        logger.info('model can not be found, client: %s, model: %d' % (client_id, int(model_id)))
         helper.send_test(sink_sock, job_id, msg_type, error_output)
-        logger.info('%s job failed, job_id' % (msg_type, job_id))
+        logger.info('%s job failed, job_id: %s' % (msg_type, job_id))
 
     def _initiate_model(self, recv_sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger):
         passed_in_model_id = int(msg)
-        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, 1, client_id, passed_in_model_id))
+        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, 1, client_id, int(passed_in_model_id)))
 
         model = SequenceTaggingModel()
-        if user_id in models:
-            client_model_path = "model_user_" + user_id + "_model_" + str(passed_in_model_id)
+        if user_id in self.models:
+            client_model_path = "model_user_" + str(user_id) + "_model_" + str(passed_in_model_id)
             if (os.path.isfile(os.path.join('.',client_model_path+'.pre')) and 
                 os.path.isfile(os.path.join('.',client_model_path+'.pt'))):
                 
                 model.load(client_model_path)
-                self.models[user_id][passed_in_model_id] = model
-                self.models_ids[user_id][passed_in_model_id] = 1
+                self.models[int(user_id)][passed_in_model_id] = model
+                self.model_ids[int(user_id)][passed_in_model_id] = 1
                 helper.send_test(sink_sock, job_id, msg_type, b'Model Loaded')
-                logger.info('%s job done\tsize: %s\tclient: %s' % (msg_type, 1, client_id))
+                logger.info('%s job done\tsize: %d\tclient: %s' % (msg_type, 1, client_id))
             else:
-                self.models[user_id][passed_in_model_id] = model
-                self.models_ids[user_id][passed_in_model_id] = 1
+                self.models[int(user_id)][passed_in_model_id] = model
+                self.model_ids[int(user_id)][passed_in_model_id] = 1
                 helper.send_test(sink_sock, job_id, msg_type, b'Model Initiated')
-                logger.info('%s job done\tsize: %s\tclient: %s' % (msg_type, 1, client_id))
+                logger.info('%s job done\tsize: %d\tclient: %s' % (msg_type, 1, client_id))
 
         else:
-            self.models[user_id] = {}
-            self.model_ids[user_id] = {}
-            self.models[user_id][passed_in_model_id] = model
-            self.models_ids[user_id][passed_in_model_id] = 1
+            self.models[int(user_id)] = {}
+            self.model_ids[int(user_id)] = {}
+            self.models[int(user_id)][passed_in_model_id] = model
+            self.model_ids[int(user_id)][passed_in_model_id] = 1
             helper.send_test(sink_sock, job_id, msg_type, b'Model Initiated')
             logger.info('%s job done\tsize: %s\tclient: %s' % (msg_type, 1, client_id))
 
     def _online_initiate(self, recv_sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger):
         model_id, sentences, labels = msg
-        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, model_id))
-        if _check_for_model(client_id, model_id):
-            self.models[user_id][model_id].online_word_build(sentences, labels) # whole unlabeled training sentences / predefined_labels
+        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, int(model_id)))
+        if self._check_for_model(client_id, model_id):
+            self.models[int(user_id)][int(model_id)].online_word_build(sentences, labels) # whole unlabeled training sentences / predefined_labels
             helper.send_test(sink_sock, job_id, msg_type, b'Online word build completed')
-            logger.info('%s job done\tsize: %s\tclient: %s' % (msg_type, len(sentences), client_id))
+            logger.info('%s job done\tsize: %d\tclient: %s' % (msg_type, len(sentences), client_id))
         else:
-            _model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, b'Online word build failed')
+            self._model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, b'Online word build failed')
 
     def _online_learning(self, recv_sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger):
         model_id, sentences, labels, epoch, batch = msg
-        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, model_id))
-        if _check_for_model(client_id, model_id):
-            self.models[user_id][model_id].online_learning(sentences, labels, epoch, batch)
-            client_model_path = "model_user_" + user_id + "_model_" + str(passed_in_model_id)
-            self.models[user_id][model_id].save(client_model_path)
+        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, int(model_id)))
+        if self._check_for_model(client_id, model_id):
+            self.models[int(user_id)][int(model_id)].online_learning(sentences, labels, epoch, batch)
+            client_model_path = "model_user_" + str(user_id) + "_model_" + str(passed_in_model_id)
+            self.models[int(user_id)][int(model_id)].save(client_model_path)
             helper.send_test(sink_sock, job_id, msg_type, b'Online learning completed')
-            logger.info('%s job done\tsize: %s\tclient: %s' % (msg_type, len(sentences), client_id))
+            logger.info('%s job done\tsize: %d\tclient: %s' % (msg_type, len(sentences), client_id))
         else:
-            _model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, b'Online learning failed')
+            self._model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, b'Online learning failed')
             
 
     def _predict(self, recv_sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger):
         model_id, sentences = msg
-        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, model_id))
-        if _check_for_model(client_id, model_id):
-            analyzed_result = self.models[user_id][model_id].analyze(sentences)
+        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, int(model_id)))
+        if self._check_for_model(client_id, model_id):
+            analyzed_result = self.models[int(user_id)][int(model_id)].analyze(sentences)
             helper.send_test(sink_sock, job_id, msg_type, jsonapi.dumps(analyzed_result))
-            logger.info('%s job done\tsize: %s\tclient: %s' % (msg_type, len(sentences), client_id))
+            logger.info('%s job done\tsize: %d\tclient: %s' % (msg_type, len(sentences), client_id))
         else:
             error_output = {
                 'words': [],
                 'entities': [],
                 'tags': []
             }   
-            _model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, jsonapi.dumps(error_output))
+            self._model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, jsonapi.dumps(error_output))
 
     def _active_learning(self, recv_sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger):
         model_id, sentences, acquire = msg
-        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, model_id))
-        if _check_for_model(client_id, model_id):
-            indices, scores = self.models[user_id][model_id].active_learning(sentences, acquire)
+        logger.info('new %s job\tsocket: %d\tsize: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, len(sentences), client_id, int(model_id)))
+        if self._check_for_model(client_id, model_id):
+            indices, scores = self.models[int(user_id)][int(model_id)].active_learning(sentences, acquire)
             json_indices = list(map(int, indices))
             json_scores = list(map(float, scores))
             active_data = {
@@ -487,13 +484,13 @@ class AlpacaWorker(Process):
                 'scores': json_scores,
             }
             helper.send_test(sink_sock, job_id, msg_type, jsonapi.dumps(active_data))
-            logger.info('%s job done\tsize: %s\tclient: %s' % (msg_type, len(sentences), client_id))
+            logger.info('%s job done\tsize: %d\tclient: %s' % (msg_type, len(sentences), client_id))
         else:
             error_output = {
                 'indices': [],
                 'scores': []
             }   
-            _model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, jsonapi.dumps(error_output))
+            self._model_not_found(sink_sock, job_id, msg_type, client_id, model_id, logger, jsonapi.dumps(error_output))
 
     @zmqd.socket(zmq.PUSH)
     @multi_socket(zmq.PULL, num_socket='num_concurrent_socket')
@@ -529,22 +526,22 @@ class AlpacaWorker(Process):
                     msg = jsonapi.loads(raw_msg)
 
                     if msg_type == ServerCmd.initiate:
-                        _initiate_model(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
+                        self._initiate_model(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
 
                     elif msg_type == ServerCmd.online_initiate:
-                        _online_initiate(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
+                        self._online_initiate(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
 
                     elif msg_type == ServerCmd.online_learning:
-                        _online_learning(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
+                        self._online_learning(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
 
                     elif msg_type == ServerCmd.predict:
-                        _predict(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
+                        self._predict(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
 
                     elif msg_type == ServerCmd.active_learning:
-                        _active_learning(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
+                        self._active_learning(sock_idx, sink_sock, job_id, client_id, user_id, req_id, msg_type, msg, logger)
 
                     elif msg_type == ServerCmd.worker_status:
-                        logger.info('new %s job\tsocket: %d\tclient: %s\tmodel: %d' % (msg_type, recv_sock_idx, client_id, model_id))
+                        logger.info('new %s job\tsocket: %d\tclient: %s' % (msg_type, sock_idx, client_id))
                         helper.send_test(sink_sock, job_id, msg_type, jsonapi.dumps(self.status()))
                         logger.info('%s job done\tclient: %s' % (msg_type, client_id))
 

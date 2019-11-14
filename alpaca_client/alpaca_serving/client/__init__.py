@@ -28,14 +28,14 @@ class AlpacaClient(object):
                  ignore_all_checks=False,
                  timeout=1000):
         
-        self.user_id = user_id
+        self.user_id = int(user_id)
         self.cur_model_id = None
 
         self.context = zmq.Context()
-        self.sending_sock_sock = self.context.socket(zmq.PUSH)
-        self.sending_sock_sock.setsockopt(zmq.LINGER, 0)
+        self.sending_sock = self.context.socket(zmq.PUSH)
+        self.sending_sock.setsockopt(zmq.LINGER, 0)
         self.identity = identity or str(uuid.uuid4()).encode('ascii')
-        self.sending_sock_sock.connect('tcp://%s:%d' % (ip, port))
+        self.sending_sock.connect('tcp://%s:%d' % (ip, port))
 
         self.receiving_sock = self.context.socket(zmq.SUB)
         self.receiving_sock.setsockopt(zmq.LINGER, 0)
@@ -74,13 +74,13 @@ class AlpacaClient(object):
         """
             Gently close all connections of the client.
         """
-        self.sending_sock_sock.close()
+        self.sending_sock.close()
         self.receiving_sock.close()
         self.context.term()
 
     def _send(self, msg_type, msg, msg_len=0):
         self.request_id += 1
-        self.sending_sock_sock.send_multipart([self.identity, self.user_id, b'%d' % self.request_id, msg_type, b'%d' % msg_len, msg])
+        self.sending_sock.send_multipart([self.identity, b'%d' % self.user_id, b'%d' % self.request_id, msg_type, b'%d' % msg_len, msg])
         self.pending_request.add(self.request_id)
         return self.request_id
 
@@ -185,10 +185,8 @@ class AlpacaClient(object):
 
         return arg_wrapper
 
-    def _check_response(self, response, original_req_id):
-        client_id, user_id, req_id, job_output = response
-
-        if client_id == self.identity and self.user_id == user_id and req_id == original_req_id:
+    def _check_response(self, client_id, user_id, request_id, original_req_id):
+        if client_id == self.identity and self.user_id == int(user_id) and original_req_id == int(request_id):
             return True
         else:
             return False
@@ -204,11 +202,11 @@ class AlpacaClient(object):
         req_id = self._send(b'SHOW_CONFIG', b'1')
         
         response = self._recv(req_id).content
-
-
-
-        if _check_response(response, req_id):
-            return jsonapi.loads(response[3])
+        
+        client_id, user_id, request_id, job_output = response
+        
+        if self._check_response(client_id, user_id, request_id, req_id):
+            return jsonapi.loads(job_output)
         else:
             return False
 
@@ -221,11 +219,11 @@ class AlpacaClient(object):
         req_id = self._send(b'INITIATE', bytes(str(model_id), encoding='ascii'))
         
         response = self._recv(req_id).content
-
+        
         client_id, user_id, request_id, job_output = response
-
-        if _check_response(response, req_id):
-            return jsonapi.loads(job_output)
+        
+        if self._check_response(client_id, user_id, request_id, req_id):
+            return str(job_output)
         else:
             return False
 
@@ -236,10 +234,10 @@ class AlpacaClient(object):
         req_id = self._send(b'WORKER_STATUS', b"1")
 
         response = self._recv(req_id).content
-
+        
         client_id, user_id, request_id, job_output = response
-
-        if _check_response(response, req_id):
+                
+        if self._check_response(client_id, user_id, request_id, req_id):
             return jsonapi.loads(job_output)
         else:
             return False
@@ -250,11 +248,11 @@ class AlpacaClient(object):
         req_id = self._send(b'ONLINE_INITIATE', jsonapi.dumps([self.cur_model_id, sentences, predefined_label]), len(sentences))
         
         response = self._recv(req_id).content
-
+        
         client_id, user_id, request_id, job_output = response
-
-        if _check_response(response, req_id):
-            return jsonapi.loads(job_output)
+        
+        if self._check_response(client_id, user_id, request_id, req_id):
+            return str(job_output)
         else:
             return False
 
@@ -264,11 +262,11 @@ class AlpacaClient(object):
         req_id = self._send(b'ONLINE_LEARNING', jsonapi.dumps([self.cur_model_id, sentences, labels, epoch, batch]), len(sentences))
         
         response = self._recv(req_id).content
-
+        
         client_id, user_id, request_id, job_output = response
-
-        if _check_response(response, req_id):
-            return jsonapi.loads(job_output)
+        
+        if self._check_response(client_id, user_id, request_id, req_id):
+            return str(job_output)
         else:
             return False
 
@@ -277,10 +275,10 @@ class AlpacaClient(object):
         req_id = self._send(b'ACTIVE_LEARNING', jsonapi.dumps([self.cur_model_id, sentences, acquire]), len(sentences))
         
         response = self._recv(req_id).content
-
+        
         client_id, user_id, request_id, job_output = response
-
-        if _check_response(response, req_id):
+        
+        if self._check_response(client_id, user_id, request_id, req_id):
             return jsonapi.loads(job_output)
         else:
             return False
@@ -290,10 +288,10 @@ class AlpacaClient(object):
         req_id = self._send(b'PREDICT', jsonapi.dumps([self.cur_model_id, sentences]), len(sentences))
         
         response = self._recv(req_id).content
-
+        
         client_id, user_id, request_id, job_output = response
-
-        if _check_response(response, req_id):
+        
+        if self._check_response(client_id, user_id, request_id, req_id):
             return jsonapi.loads(job_output)
         else:
             return False
